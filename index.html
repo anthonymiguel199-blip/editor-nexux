@@ -298,6 +298,11 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
         <div class="body" id="deskGrade"></div>
       </details>
 
+      <details class="sec" data-tab="mascara">
+        <summary>Máscaras com IA</summary>
+        <div class="body" id="deskMask"></div>
+      </details>
+
       <details class="sec" data-tab="efeitos">
         <summary>Efeitos</summary>
         <div class="body">
@@ -444,12 +449,12 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
 
   /* ---------- Estado ---------- */
   const DEFAULTS={look:'clean',intensity:100,auto:false,exposure:0,contrast:0,highlights:0,shadows:0,whites:0,blacks:0,temp:0,tint:0,vibrance:0,sat:0,
-    clarity:0,dehaze:0,rotate:0,curve:{rgb:[[0,0],[1,1]],r:[[0,0],[1,1]],g:[[0,0],[1,1]],b:[[0,0],[1,1]]},
+    clarity:0,dehaze:0,rotate:0,mask:'none',mExp:0,mCon:0,mTemp:0,mSat:0,mBlur:0,curve:{rgb:[[0,0],[1,1]],r:[[0,0],[1,1]],g:[[0,0],[1,1]],b:[[0,0],[1,1]]},
     gShH:210,gShS:0,gMidH:30,gMidS:0,gHiH:40,gHiS:0,gBal:0,
     sharp:0,fade:0,vignette:0,grain:0,crop:'orig',cropY:50,outSize:0,wmOn:true,pos:'br',size:13,opacity:70,margin:3};
   for(let i=0;i<8;i++){DEFAULTS['mixH'+i]=0;DEFAULTS['mixS'+i]=0;DEFAULTS['mixL'+i]=0;}
   const KEYS=Object.keys(DEFAULTS);
-  const NON_COLOR=new Set(['auto','sharp','vignette','grain','clarity','rotate','crop','cropY','outSize','wmOn','pos','size','opacity','margin']);
+  const NON_COLOR=new Set(['mask','mExp','mCon','mTemp','mSat','mBlur','auto','sharp','vignette','grain','clarity','rotate','crop','cropY','outSize','wmOn','pos','size','opacity','margin']);
   const COLOR_KEYS=KEYS.filter(k=>!NON_COLOR.has(k));
   const state=Object.assign({},JSON.parse(JSON.stringify(DEFAULTS)),{photos:[],current:0,logo:null});
   const store={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(e){return d;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));return true;}catch(e){return false;}}};
@@ -626,19 +631,23 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
   }
 
   /* pipeline completo: recorte -> cor (LUT) -> nitidez -> vinheta/grão -> marca d'água */
-  function render(c,src,p,forExport,original){
-    const cr=cropRect(src.width||src.naturalWidth,src.height||src.naturalHeight);
-    const [w,h]=outDims(cr.w,cr.h,forExport);
-    c.width=w;c.height=h;const g=c.getContext('2d',{willReadFrequently:true});
+  function drawSrc(g,src,cr,w,h){
     g.imageSmoothingQuality='high';
     const ang=state.rotate*Math.PI/180;
     if(ang){const ca=Math.abs(Math.cos(ang)),sa=Math.abs(Math.sin(ang)),sc2=Math.max((w*ca+h*sa)/w,(w*sa+h*ca)/h);
       g.save();g.translate(w/2,h/2);g.rotate(ang);g.scale(sc2,sc2);g.drawImage(src,cr.x,cr.y,cr.w,cr.h,-w/2,-h/2,w,h);g.restore();}
     else g.drawImage(src,cr.x,cr.y,cr.w,cr.h,0,0,w,h);
+  }
+  function render(c,src,p,forExport,original){
+    const cr=cropRect(src.width||src.naturalWidth,src.height||src.naturalHeight);
+    const [w,h]=outDims(cr.w,cr.h,forExport);
+    c.width=w;c.height=h;const g=c.getContext('2d',{willReadFrequently:true});
+    drawSrc(g,src,cr,w,h);
     if(original)return;
     let id=g.getImageData(0,0,w,h);applyLUT(id.data,lutFor(p));g.putImageData(id,0,0);
     if(state.clarity)clarityFx(c,g,w,h,state.clarity/100);
     if(state.sharp>0){id=g.getImageData(0,0,w,h);sharpen(id.data,w,h,state.sharp/100);g.putImageData(id,0,0);}
+    applyMask(c,g,p,cr,src.width||src.naturalWidth,forExport);
     effects(c,g);drawWatermark(c,g);
   }
 
@@ -813,7 +822,7 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
 
   /* ---------- Exportar ---------- */
   function outName(n){return n.replace(/\.[^.]+$/,'')+'-nexux.jpg';}
-  function toBlob(p){const c=document.createElement('canvas');render(c,p.img,p,true,false);return new Promise(r=>c.toBlob(r,'image/jpeg',0.93));}
+  async function toBlob(p){await ensureMask(p);const c=document.createElement('canvas');render(c,p.img,p,true,false);return new Promise(r=>c.toBlob(r,'image/jpeg',0.93));}
   const tick=()=>new Promise(r=>setTimeout(r,20));
   const touch=matchMedia('(pointer:coarse)').matches;
   function download(blob,filename){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=filename;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},4000);}
@@ -864,6 +873,7 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
     curve:'<path d="M3 3v18h18" opacity=".45"/><path d="M4 20C10 20 9 5 20 4"/><circle cx="11" cy="12" r="1.6" fill="currentColor"/>',
     mix:'<circle cx="9" cy="9.5" r="5"/><circle cx="15" cy="9.5" r="5"/><circle cx="12" cy="15" r="5"/>',
     grade:'<circle cx="12" cy="12" r="9"/><path d="M12 3v18M3 12h18" opacity=".4"/><circle cx="15.5" cy="8.5" r="1.8" fill="currentColor"/>',
+    mask:'<circle cx="12" cy="8" r="3.5"/><path d="M5 20c.8-3.6 3.6-6 7-6s6.2 2.4 7 6"/><path d="M3 3h4M3 3v4M21 3h-4M21 3v4M3 21v-3M21 21v-3"/>',
     more:'<circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/>'
   };
   const svg=n=>'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+ICON[n]+'</svg>';
@@ -900,14 +910,96 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
     g.globalCompositeOperation='source-over';
   }
 
+  /* ---------- Máscaras com IA (rodam no próprio aparelho) ---------- */
+  var uiShowMask=false,segLib=null,segBusy=Promise.resolve();
+  const MASKKEYS=['mask','mExp','mCon','mTemp','mSat','mBlur'];
+  function loadScript(src){return new Promise((ok,err)=>{const s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=()=>err(new Error('load'));document.head.appendChild(s);});}
+  async function getSeg(){
+    if(segLib)return segLib;
+    segLib=(async()=>{
+      if(!window.SelfieSegmentation)await loadScript('mp/selfie_segmentation.js');
+      const ss=new window.SelfieSegmentation({locateFile:f=>'mp/'+f});
+      ss.setOptions({modelSelection:1,selfieMode:false});
+      ss._resolve=null;ss.onResults(r=>{if(ss._resolve){const f=ss._resolve;ss._resolve=null;f(r);}});
+      await ss.initialize();return ss;
+    })();
+    segLib.catch(()=>{segLib=null;});
+    return segLib;
+  }
+  function alphaCanvas(w,h,fill){const c=document.createElement('canvas');c.width=w;c.height=h;const g=c.getContext('2d',{willReadFrequently:true});const id=g.createImageData(w,h);
+    for(let i=0,j=0;j<w*h;i+=4,j++){id.data[i]=id.data[i+1]=id.data[i+2]=255;id.data[i+3]=fill[j];}g.putImageData(id,0,0);return c;}
+  async function personMask(src){
+    const ss=await getSeg();
+    const r=await (segBusy=segBusy.then(()=>new Promise(ok=>{ss._resolve=ok;ss.send({image:src});})));
+    const w=src.width,h=src.height,t=document.createElement('canvas');t.width=w;t.height=h;const g=t.getContext('2d',{willReadFrequently:true});
+    g.drawImage(r.segmentationMask,0,0,w,h);const d=g.getImageData(0,0,w,h).data,a=new Uint8ClampedArray(w*h);
+    for(let i=0,j=0;j<w*h;i+=4,j++){const v=d[i+3]/255,s=clamp((v-.3)/.4);a[j]=s*s*(3-2*s)*255;}
+    return alphaCanvas(w,h,a);
+  }
+  /* céu: parte de cima da foto, clara e azulada ou branca, ligada à borda superior */
+  function skyMask(src){
+    const k=Math.min(1,256/src.width),W=Math.max(8,Math.round(src.width*k)),H=Math.max(8,Math.round(src.height*k));
+    const t=document.createElement('canvas');t.width=W;t.height=H;const g=t.getContext('2d',{willReadFrequently:true});g.drawImage(src,0,0,W,H);
+    const d=g.getImageData(0,0,W,H).data,n=W*H,R=new Float32Array(n),G=new Float32Array(n),B=new Float32Array(n),L=new Float32Array(n);
+    for(let j=0,i=0;j<n;j++,i+=4){R[j]=d[i]/255;G[j]=d[i+1]/255;B[j]=d[i+2]/255;L[j]=lum(R[j],G[j],B[j]);}
+    const sky=j=>(L[j]>.5&&B[j]>=R[j]-.03&&B[j]>=G[j]-.1)||L[j]>.8;
+    const seen=new Uint8Array(n),q=[];for(let x=0;x<W;x++)if(sky(x)){seen[x]=1;q.push(x);}
+    while(q.length){const j=q.pop(),x=j%W,y=(j/W)|0;
+      [[x-1,y],[x+1,y],[x,y-1],[x,y+1]].forEach(([nx,ny])=>{if(nx<0||ny<0||nx>=W||ny>=H)return;const m=ny*W+nx;if(seen[m])return;
+        const cd=Math.abs(R[m]-R[j])+Math.abs(G[m]-G[j])+Math.abs(B[m]-B[j]);
+        if((sky(m)&&cd<.25)||(L[m]>.42&&cd<.08)){seen[m]=1;q.push(m);}});}
+    const a=new Uint8ClampedArray(n);for(let j=0;j<n;j++)a[j]=seen[j]?255:0;
+    const raw=alphaCanvas(W,H,a),f=document.createElement('canvas');f.width=src.width;f.height=src.height;const fg=f.getContext('2d');
+    const s=document.createElement('canvas');s.width=Math.max(4,W>>2);s.height=Math.max(4,H>>2);s.getContext('2d').drawImage(raw,0,0,s.width,s.height);
+    fg.imageSmoothingQuality='high';fg.drawImage(raw,0,0,f.width,f.height);fg.globalAlpha=.6;fg.drawImage(s,0,0,f.width,f.height);
+    return f;
+  }
+  /* devolve a máscara pronta da foto, ou null enquanto a IA ainda está analisando */
+  function maskFor(p){
+    if(!p||state.mask==='none')return null;
+    if(state.mask==='sky'){if(!p.skyMask)p.skyMask=skyMask(p.small);return p.skyMask;}
+    if(p.personMask)return p.personMask;
+    if(!p.personPending&&!p.personFailed){
+      $('status').textContent='Analisando a foto com IA…';
+      p.personPending=personMask(p.small).then(m=>{p.personMask=m;$('status').textContent='Máscara pronta.';renderPreview();})
+        .catch(()=>{p.personFailed=true;$('status').textContent='A IA de pessoas não carregou aqui. Use o app da Nexux com internet na primeira vez.';})
+        .finally(()=>{p.personPending=null;});
+    }
+    return null;
+  }
+  async function ensureMask(p){if(state.mask==='none')return;maskFor(p);if(p.personPending)await p.personPending;}
+  const hasLocal=()=>state.mExp||state.mCon||state.mTemp||state.mSat||state.mBlur;
+  function applyMask(c,g,p,cr,srcW,forExport){
+    const mk=maskFor(p);if(!mk)return;
+    const show=!forExport&&uiShowMask;if(!hasLocal()&&!show)return;
+    const w=c.width,h=c.height,k=mk.width/srcW,mc=document.createElement('canvas');mc.width=w;mc.height=h;const mg=mc.getContext('2d',{willReadFrequently:true});
+    drawSrc(mg,mk,{x:cr.x*k,y:cr.y*k,w:cr.w*k,h:cr.h*k},w,h);
+    const md=mg.getImageData(0,0,w,h).data,inv=state.mask==='background';
+    let bd=null;
+    if(state.mBlur>0){const sz=Math.max(12,Math.round(Math.max(w,h)/(4+state.mBlur*.6))),kk=sz/Math.max(w,h),s=document.createElement('canvas');s.width=Math.max(2,Math.round(w*kk));s.height=Math.max(2,Math.round(h*kk));
+      const sg=s.getContext('2d');sg.imageSmoothingQuality='high';sg.drawImage(c,0,0,s.width,s.height);
+      const b2=document.createElement('canvas');b2.width=w;b2.height=h;const bg=b2.getContext('2d',{willReadFrequently:true});bg.imageSmoothingQuality='high';bg.drawImage(s,0,0,w,h);bd=bg.getImageData(0,0,w,h).data;}
+    const id=g.getImageData(0,0,w,h),d=id.data,E=state.mExp/100*Math.LN2,C=state.mCon/100*.6,T=state.mTemp/100,S=state.mSat/100;
+    for(let i=0;i<d.length;i+=4){let m=md[i+3]/255;if(inv)m=1-m;if(m<.004)continue;
+      let r=d[i],gg=d[i+1],b=d[i+2];
+      if(bd){r+=(bd[i]-r)*m;gg+=(bd[i+1]-gg)*m;b+=(bd[i+2]-b)*m;}
+      if(E){const e=Math.exp(E*m);r*=e;gg*=e;b*=e;}
+      if(T){r*=1+T*.1*m;b*=1-T*.1*m;}
+      if(C){const f=1+C*m;r=127.5+(r-127.5)*f;gg=127.5+(gg-127.5)*f;b=127.5+(b-127.5)*f;}
+      if(S){const L=.2126*r+.7152*gg+.0722*b,f=1+S*m;r=L+(r-L)*f;gg=L+(gg-L)*f;b=L+(b-L)*f;}
+      if(show){r+=(255-r)*.45*m;gg*=1-.45*m;b*=1-.45*m;}
+      d[i]=r;d[i+1]=gg;d[i+2]=b;}
+    g.putImageData(id,0,0);
+  }
+
   /* ---------- Controles compartilhados (celular e computador) ---------- */
   var uiMix=0,uiZone='Sh',uiCh='rgb';
   const clone=v=>JSON.parse(JSON.stringify(v));
   const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
-  function rangeOf(k){const el=document.getElementById(k);if(el&&el.type==='range')return [el.min,el.max,el.step,el.disabled];
+  function rangeOf(k){if(/^m(Exp|Con|Temp|Sat|Blur)$/.test(k))return [k==='mBlur'?0:-100,100,1,state.mask==='none'];const el=document.getElementById(k);if(el&&el.type==='range')return [el.min,el.max,el.step,el.disabled];
     if(/^g(Sh|Mid|Hi)H$/.test(k))return [0,359,1,false];if(/^g(Sh|Mid|Hi)S$/.test(k))return [0,100,1,false];return [-100,100,1,false];}
   function fmtOf(k){const o=document.getElementById(k+'Out');if(o)return o.textContent;const v=state[k];
-    if(/^g(Sh|Mid|Hi)H$/.test(k))return v+'°';if(/^g(Sh|Mid|Hi)S$/.test(k))return String(v);return (v>0?'+':'')+v;}
+    if(/^g(Sh|Mid|Hi)H$/.test(k))return v+'°';if(/^g(Sh|Mid|Hi)S$/.test(k)||k==='mBlur')return String(v);return (v>0?'+':'')+v;}
   function sliderRow(parent,k,label,o){o=o||{};
     const row=document.createElement('div');row.className='dp-row';
     const top=document.createElement('div');top.className='dp-top';
@@ -971,6 +1063,14 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
       chipRow(parent,[['Sh','Sombras'],['Mid','Meios-tons'],['Hi','Realces']].map(([z,l])=>[l,uiZone===z,()=>{uiZone=z;rerender();},state['g'+z+'S']?'hsl('+state['g'+z+'H']+',90%,60%)':null]));
       sliderRow(parent,'g'+uiZone+'H','Matiz',Object.assign({hue:true},o));sliderRow(parent,'g'+uiZone+'S','Saturação',o);sliderRow(parent,'gBal','Equilíbrio',o);
     }
+    if(kind==='mask'){
+      chipRow(parent,[['none','Nenhuma'],['person','Pessoas'],['background','Fundo'],['sky','Céu']].map(([v,l])=>[l,state.mask===v,()=>{state.mask=v;saveSettings();renderPreview();rerender();}]));
+      if(state.mask!=='none')chipRow(parent,[[uiShowMask?'Ocultar seleção':'Ver seleção',uiShowMask,()=>{uiShowMask=!uiShowMask;renderPreview();rerender();}]]);
+      const hp=document.createElement('p');hp.className='hint';
+      hp.textContent=state.mask==='none'?'Escolha uma parte da foto para ajustar só ela.':state.mask==='sky'?'O céu é detectado pela cor e pela posição na foto.':'Pessoas e Fundo usam IA no próprio aparelho. Na primeira vez leva alguns segundos.';
+      parent.appendChild(hp);
+      [['mExp','Exposição'],['mCon','Contraste'],['mTemp','Temperatura'],['mSat','Saturação'],['mBlur','Desfoque']].forEach(([k,l])=>sliderRow(parent,k,l,o));
+    }
     if(kind==='curve'){
       chipRow(parent,CH.map(([c,l,col])=>[l,uiCh===c,()=>{uiCh=c;rerender();},c==='rgb'?null:col]));
       curveEditor(parent);
@@ -978,7 +1078,7 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
   }
   function renderDesk(){
     if(mq.matches)return;
-    [['deskMix','mix',MIXKEYS],['deskCurve','curve',['curve']],['deskGrade','grade',GKEYS]].forEach(([id,kind,keys])=>{
+    [['deskMask','mask',MASKKEYS],['deskMix','mix',MIXKEYS],['deskCurve','curve',['curve']],['deskGrade','grade',GKEYS]].forEach(([id,kind,keys])=>{
       const el=$(id);if(!el)return;el.innerHTML='';buildSpecial(el,kind,renderDesk);
       const r=document.createElement('div');r.className='row';const b=document.createElement('button');b.className='btn small';b.textContent='Redefinir';
       b.onclick=()=>{keys.forEach(k=>state[k]=clone(DEFAULTS[k]));saveSettings();renderAll();};r.appendChild(b);el.appendChild(r);});
@@ -1006,6 +1106,7 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
     {id:'mix',label:'Mistura',icon:'mix',kind:'mix',params:[],reset:MIXKEYS},
     {id:'curva',label:'Curva',icon:'curve',kind:'curve',params:[],reset:['curve']},
     {id:'grade',label:'Gradação',icon:'grade',kind:'grade',params:[],reset:GKEYS},
+    {id:'mascara',label:'Máscaras',icon:'mask',kind:'mask',params:[],reset:MASKKEYS},
     {id:'efeitos',label:'Efeitos',icon:'fx',params:['clarity','dehaze','sharp','fade','vignette','grain']},
     {id:'recorte',label:'Recorte',icon:'crop',kind:'crop',params:['rotate','cropY']},
     {id:'marca',label:'Marca',icon:'mark',kind:'wm',params:['size','opacity','margin']},
@@ -1062,7 +1163,7 @@ input[type=range].hue::-moz-range-track{background:linear-gradient(to right,#ff4
         .concat([['br','Inf. dir.'],['bl','Inf. esq.'],['tr','Sup. dir.'],['tl','Sup. esq.'],['c','Centro'],['tile','Repetida']].map(([v,l])=>[l,state.pos===v,()=>{setPos(v);dockUpdate();}])));
 
       const onIn=()=>{rs.disabled=isDefault();};
-      if(t.kind==='mix'||t.kind==='curve'||t.kind==='grade')buildSpecial(dPanel,t.kind,renderDock,onIn);
+      if(t.kind==='mix'||t.kind==='curve'||t.kind==='grade'||t.kind==='mask')buildSpecial(dPanel,t.kind,renderDock,onIn);
       t.params.forEach(k=>sliderRow(dPanel,k,META[k],{onInput:onIn,rerender:dockUpdate}));
       dPanel.scrollTop=keepY;
     }
